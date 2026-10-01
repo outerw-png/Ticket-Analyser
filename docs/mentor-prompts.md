@@ -46,7 +46,7 @@ Create these entities, each with AnalysisId (Analysis Identifier, delete rule De
 ## Step 4 — `TIA_Core`: config, prompt and log entities
 
 ```
-Create entity PromptTemplate: Code (Text 50), VersionNo (Integer), Name (Text 100), SystemPrompt (Text 20000), UserPromptTemplate (Text 20000), OutputSchemaJson (Text 20000), Model (Text 100), Temperature (Decimal), MaxOutputTokens (Integer), IsActive (Boolean), Notes (Text 500), with a unique index on (Code, VersionNo).
+Create entity PromptTemplate: Code (Text 50), VersionNo (Integer), Name (Text 100), SystemPrompt (Text 20000), UserPromptTemplate (Text 20000), OutputSchemaJson (Text 20000), Model (Text 100), Effort (Text 10), MaxOutputTokens (Integer), IsActive (Boolean), Notes (Text 500), with a unique index on (Code, VersionNo).
 Create entity AiCallLog: AnalysisId (Long Integer), PromptTemplateId (Long Integer), Provider (Text 30), Model (Text 100), StartedOn (DateTime), DurationMs (Integer), HttpStatus (Integer), PromptTokens (Integer), CompletionTokens (Integer), Attempt (Integer), Succeeded (Boolean), ErrorCode (Text 30), ErrorMessage (Text 2000), CorrelationId (Text 50).
 Create entity ErrorLog: CorrelationId (Text 50), Module (Text 50), ActionName (Text 100), ErrorCode (Text 30), Message (Text 2000), StackTrace (Text 20000), UserId (User Identifier), ContextJson (Text 4000), CreatedOn (DateTime).
 Create entity AuditLog: EntityName (Text 50), EntityId (Long Integer), EventType (Text 30), UserId (User Identifier), OldValue (Text 4000), NewValue (Text 4000), OccurredOn (DateTime).
@@ -86,12 +86,42 @@ Create a server action Budget_Truncate with inputs Title, Description, ErrorMess
 
 ## Step 8 — `TIA_AI_Connector` library (REST by hand, wrapper by Mentor)
 
-**By hand:** *Consume REST API* → POST `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…`. Add header `api-key` from a **secret** setting. Paste a sample request/response so structures are generated. Then:
+**By hand:**
+1. Add secret settings `Claude_ApiKey` (Text, **Is Secret = Yes**) and `Claude_Model` (Text, e.g. `claude-opus-5-5`); set the values in the ODC Portal per stage. Get the key from the Anthropic Console.
+2. *Consume REST API* → `POST https://api.anthropic.com/v1/messages`. Paste these samples so structures are generated.
+
+Request:
+```json
+{"model":"claude-opus-5-5","max_tokens":4000,"system":"You are a helpful assistant.",
+ "messages":[{"role":"user","content":"Say hello."}]}
+```
+Response:
+```json
+{"id":"msg_123","type":"message","role":"assistant","model":"claude-opus-5-5",
+ "content":[{"type":"text","text":"{\"hello\":\"world\"}"}],
+ "stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":10}}
+```
+Name the method `CreateMessage`. If you want schema-constrained JSON, also add `output_config` (`format` of type `json_schema` with a `schema`) to the request structure; verify the exact shape in Anthropic's API docs.
+
+Then give Mentor:
 
 ```
-Create a server action AI_GenerateStructuredCompletion with inputs SystemPrompt, UserPrompt, SchemaJson, Model, Temperature (Decimal), MaxTokens (Integer), TimeoutSec (Integer), CorrelationId, MaxRetries (Integer). It calls the chat completions REST method I consumed, with response format set to JSON. Output a structure AiResponse: Content, PromptTokens, CompletionTokens, HttpStatus, DurationMs, Succeeded, ErrorCode, ErrorMessage.
-Retry up to MaxRetries on HTTP 408, 429 and 5xx with waiting of 2 seconds then 6 seconds (use a loop and a wait mechanism that fits ODC). Do not retry on 400, 401, 403. Map errors: timeout AI-001, 429 AI-002, 5xx AI-003, 401/403 AI-004, content filter AI-005. Never throw; always return the AiResponse.
+I have a consumed REST API method CreateMessage (POST https://api.anthropic.com/v1/messages) and two secret settings: Claude_ApiKey and Claude_Model.
+
+In the OnBeforeRequest callback, add the headers "x-api-key" (value of Claude_ApiKey), "anthropic-version" = "2023-06-01" and "content-type" = "application/json". Never log the key or the request headers.
+
+Create a public server action AI_GenerateStructuredCompletion with inputs SystemPrompt, UserPrompt, SchemaJson (Text), Model (Text, use Claude_Model if empty), Effort (Text), MaxTokens (Integer), TimeoutSec (Integer), CorrelationId (Text), MaxRetries (Integer, default 2). Output structure AiResponse: Content, PromptTokens, CompletionTokens, HttpStatus, DurationMs, Succeeded, ErrorCode, ErrorMessage, StopReason.
+
+Build the request with system = SystemPrompt and one user message = UserPrompt; do not send temperature or a thinking parameter. If Effort is not empty set output_config.effort. If SchemaJson is not empty, include output_config.format of type json_schema with that schema. Call CreateMessage. Set Content to the text of the first content block whose type is "text". Fill token counts from usage.input_tokens and usage.output_tokens, and StopReason from stop_reason.
+
+If stop_reason is "refusal", return Succeeded = False, ErrorCode "AI-005". Retry up to MaxRetries on HTTP 408, 429, 529 and 5xx with 2 and then 6 seconds of waiting; no retry on 400, 401, 403. Map timeout to AI-001, 429/529 to AI-002, 5xx to AI-003, 401/403 to AI-004. Never throw; always return AiResponse.
+
+Also create AI_TestConnection that sends "Reply with OK" and returns Success, LatencyMs, ErrorMessage.
 ```
+
+Troubleshooting: 401 = wrong key; 400 naming a field = remove or fix that parameter; 404 = wrong model ID.
+
+---
 
 ## Step 9 — `TIA_Core`: submit and queue
 
@@ -108,7 +138,7 @@ Create a server action Analysis_Execute with input AnalysisId. Steps:
 1. Load the Analysis, its Ticket, and the active PromptTemplate with Code = "ANALYZE_TICKET".
 2. Read AppSetting MaxInputChars. Apply Sanitizer_Mask to Description, ErrorMessages, BusinessImpact and AdditionalNotes, then Budget_Truncate.
 3. Build the system prompt from the template and the user prompt with Prompt_Render using the placeholders Title, Description, ErrorMessages, BusinessImpact, AdditionalNotes, TicketType, UserPriority, Platform, OutputLanguage ("English").
-4. Generate a CorrelationId and call AI_GenerateStructuredCompletion using the template Model, Temperature and MaxOutputTokens.
+4. Generate a CorrelationId and call AI_GenerateStructuredCompletion using the template Model, Effort and MaxOutputTokens.
 5. Create an AiCallLog record from the response, whether it succeeded or not.
 6. If it failed, set Analysis Status to Failed with the ErrorCode, set NextAttemptOn (+2 minutes for AI-001/002/003), write an ErrorLog and stop.
 7. Call Output_Parse. If invalid, call the AI once more with a repair prompt that includes the invalid text, then parse again. If still invalid, mark the Analysis Failed with AI-010.
@@ -153,7 +183,7 @@ Screen ActionItems: table of ActionItem filtered by status, with inline status c
 
 ```
 Create a Reactive Web app restricted to role TIA_PromptAdmin and TIA_Admin. Screens:
-- PromptTemplates: list grouped by Code with VersionNo and active flag; detail form for SystemPrompt, UserPromptTemplate, OutputSchemaJson, Model, Temperature (0–1), MaxOutputTokens; validate that OutputSchemaJson is valid JSON and that the template contains {{Title}} and {{Description}}; buttons Save as new version, Activate (deactivates other versions with the same Code, with confirmation) and Test.
+- PromptTemplates: list grouped by Code with VersionNo and active flag; detail form for SystemPrompt, UserPromptTemplate, OutputSchemaJson, Model, Effort (low, medium or high), MaxOutputTokens; validate that OutputSchemaJson is valid JSON and that the template contains {{Title}} and {{Description}}; buttons Save as new version, Activate (deactivates other versions with the same Code, with confirmation) and Test.
 - Settings: edit AppSetting records with a Save button.
 - Monitoring: last 100 AiCallLog records with duration, tokens and success, a chart of calls per day, last 100 ErrorLog records with search by CorrelationId, and AuditLog with date filter (maximum 90 days).
 ```
@@ -174,7 +204,7 @@ Add role checks: on screens of TIA_Web allow TIA_Consultant, TIA_Reviewer, TIA_M
 
 ## Seed the prompt template (manual)
 
-Create the `ANALYZE_TICKET` v1 record in `PromptTemplate` using the System prompt, User prompt and JSON schema from section 5 of the design document (`Model` = your deployment name, `Temperature` = 0.2, `MaxOutputTokens` = 2500, `IsActive` = True).
+Create the `ANALYZE_TICKET` v1 record in `PromptTemplate` using the System prompt, User prompt and JSON schema from section 5 of the design document (`Model` = `claude-opus-5-5` or the value of your `Claude_Model` setting, `Effort` = `medium`, `MaxOutputTokens` = 4000, `IsActive` = True).
 
 ## Tips for Mentor
 - Give one step at a time; publish after each step so errors surface early.

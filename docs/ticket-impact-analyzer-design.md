@@ -14,7 +14,7 @@ Version 1.0 · Status: Draft for review
 **Design principles**
 1. **AI is advisory.** Every output is stored as a *versioned draft*; a human can edit, approve or reject it.
 2. **Structured output only.** The LLM must return JSON validated against a schema; free text never drives logic.
-3. **Provider-agnostic.** Prompts, provider calls and parsing are isolated behind a service layer so the LLM vendor (Azure OpenAI, Anthropic, etc.) can be swapped without touching UI or data.
+3. **Provider-agnostic.** Prompts, provider calls and parsing are isolated behind a service layer so the LLM vendor (Anthropic Claude by default; Azure OpenAI or others as alternatives) can be swapped without touching UI or data.
 4. **Secrets and PII out of code.** API keys in ODC secret settings; ticket content sanitized before leaving the platform.
 5. **Async by default.** Analysis runs in a background timer/event; UI polls or refreshes — no long blocking screens.
 6. **Everything observable.** Each AI call is logged (latency, tokens, status, prompt version) without storing secrets.
@@ -52,7 +52,7 @@ Consultant ─► TIA_Web ─► TIA_Core.SubmitTicket ─► DB (Ticket, Status
                               │ triggers async (Timer wake / Workflow)
                               ▼
                  TIA_Core.AnalysisOrchestrator
-                   1 Load ticket + context      4 Call connector ─► LLM (Azure OpenAI / Anthropic)
+                   1 Load ticket + context      4 Call connector ─► LLM (Anthropic Claude API)
                    2 Sanitize (PII mask)        5 Parse + validate JSON
                    3 Build prompt (TIA_Prompts) 6 Persist Analysis + children, Status=Completed
                               │ failure → retry/backoff → Status=Failed + error log
@@ -128,9 +128,9 @@ Conventions: every entity has `Id` (Long Integer, auto-number identifier), `Crea
 
 ### 2.2 AI & configuration entities
 
-**PromptTemplate**: `Id`, `Code` Text(50) (e.g. `ANALYZE_TICKET`), `VersionNo` Integer, `Name` Text(100), `SystemPrompt` Text(unbounded), `UserPromptTemplate` Text(unbounded) (with `{{placeholders}}`), `OutputSchemaJson` Text(unbounded), `Model` Text(100), `Temperature` Decimal, `MaxOutputTokens` Integer, `IsActive` Boolean, `Notes` Text(500). Unique index `(Code, VersionNo)`; only one active per Code.
+**PromptTemplate**: `Id`, `Code` Text(50) (e.g. `ANALYZE_TICKET`), `VersionNo` Integer, `Name` Text(100), `SystemPrompt` Text(unbounded), `UserPromptTemplate` Text(unbounded) (with `{{placeholders}}`), `OutputSchemaJson` Text(unbounded), `Model` Text(100), `Effort` Text(10) (low/medium/high), `MaxOutputTokens` Integer, `IsActive` Boolean, `Notes` Text(500). Unique index `(Code, VersionNo)`; only one active per Code.
 
-**AiProviderConfig**: `Id`, `ProviderCode` Text(30), `DeploymentName` Text(100), `TimeoutSeconds` Integer, `MaxRetries` Integer, `MaxInputChars` Integer, `IsActive` Boolean. (Endpoint/API key remain in ODC secret/site settings, **not** in DB.)
+**AiProviderConfig**: `Id`, `ProviderCode` Text(30), `ModelName` Text(100), `TimeoutSeconds` Integer, `MaxRetries` Integer, `MaxInputChars` Integer, `IsActive` Boolean. (Endpoint/API key remain in ODC secret/site settings, **not** in DB.)
 
 **AiCallLog**: `Id`, `AnalysisId`, `PromptTemplateId`, `Provider`, `Model`, `StartedOn`, `DurationMs` Integer, `HttpStatus` Integer, `PromptTokens`, `CompletionTokens`, `Attempt` Integer, `Succeeded` Boolean, `ErrorCode` Text(30), `ErrorMessage` Text(2000), `CorrelationId` Text(50). **No prompt body by default**; a config flag `LogPayloads` stores a sanitized copy in a restricted entity for debugging.
 
@@ -182,10 +182,11 @@ Delete rules: child → parent `Delete` (cascade) for Analysis children; `Protec
 5. **Sanitizer** (`TIA_Common`): masks emails, phone numbers, IBANs, IPs, tokens/passwords (regex), optional customer-name dictionary; keeps a reversible map only in memory if needed.
 
 ### 4.2 Provider recommendation
-Use **Azure OpenAI (or Azure AI Foundry-hosted model)** in the customer's tenant when data residency/Azure is already in use; alternative: Anthropic API. Configure:
-- `Temperature` 0.2 (consistency), `max_tokens` ≈ 2,500, JSON/structured output mode (`response_format` / tool-call schema) enabled.
-- Authentication: API key in **ODC secret setting** (or Entra ID with managed identity via an intermediary Azure Function/API Management if mandated).
-- Timeout 60 s, 2 retries with exponential back-off (2 s, 6 s) only on 408/429/5xx; honor `Retry-After`.
+Default: **Anthropic Claude API** (`POST https://api.anthropic.com/v1/messages`). Alternatives (Azure OpenAI, other providers) plug into the same connector. Confirm with security/compliance that ticket data may be sent to the chosen provider. Configure:
+- Model in an ODC setting `Claude_Model` (e.g. `claude-opus-5-5`, or `claude-sonnet-5-5` as a lower-cost option; benchmark both on a golden set). `max_tokens` ≈ 4,000. Do **not** send `temperature`/`top_p`/`top_k` or a `thinking` parameter on current models (rejected with HTTP 400); control depth with `output_config.effort` (`medium` is a good start).
+- Structured output: `output_config.format` of type `json_schema` using the template's `OutputSchemaJson`, so the reply conforms to the schema. Read the first content block of type `text`; check `stop_reason` — `refusal` is mapped to `AI-005`.
+- Authentication: header `x-api-key` from an **ODC secret setting** `Claude_ApiKey`, plus `anthropic-version: 2023-06-01`. Never log the key.
+- Timeout 60 s, 2 retries with exponential back-off (2 s, 6 s) only on 408/429/5xx (including Anthropic 529 overloaded); honor `Retry-After`.
 
 ### 4.3 Sequence (analysis run)
 1. `SubmitTicket` validates, saves Ticket (Submitted), creates Analysis (Queued), writes audit log, **wakes timer** `ProcessAnalysisQueue` (`WakeTimer`/Server Action `RunAnalysisAsync`) and returns immediately.
@@ -400,7 +401,7 @@ Common: responsive Reactive Web layout, `LayoutPublic` for login-less error page
 - **Widgets:** template list by Code with versions, editor (system prompt, user prompt, schema, params), placeholder reference, *Test* panel (sample ticket → raw/parsed output, tokens, latency), *Activate*, *Clone as new version*.
 - **Inputs:** `TemplateId`. **Outputs:** saved/activated version.
 - **Actions:** `OnSave`, `OnTest`, `OnActivate`, `OnExport/Import`.
-- **Validation:** schema is valid JSON; all required placeholders exist (`{{Title}}`, `{{Description}}`…); temperature 0–1; token limit within provider max; only one active per Code; saved versions immutable once used by an analysis.
+- **Validation:** schema is valid JSON; all required placeholders exist (`{{Title}}`, `{{Description}}`…); effort one of low/medium/high; token limit within provider max; only one active per Code; saved versions immutable once used by an analysis.
 
 ### 7.8 Admin — AI Settings & Reference Data
 - **Purpose:** configure provider parameters, quotas, feature flags, maintain Platforms/Priorities.
@@ -530,7 +531,7 @@ Naming: `Entity_Verb`; public ones in `TIA_Core` exposed as **Service Actions** 
 | `Timer_ProcessAnalysisQueue`, `Timer_Housekeeping` | – | Timers |
 
 ### 9.2 TIA_AI_Connector (Library)
-- `AI_GenerateStructuredCompletion(Request{SystemPrompt, UserPrompt, SchemaJson, Model, Temperature, MaxTokens, TimeoutSec, CorrelationId}) → Response{Content, PromptTokens, CompletionTokens, HttpStatus, DurationMs, Succeeded, ErrorCode, ErrorMessage}` — builds provider body, sets headers from secret settings, executes with `OnAfterResponse`/`OnBeforeRequest` callbacks, classifies errors, applies retry/back-off loop.
+- `AI_GenerateStructuredCompletion(Request{SystemPrompt, UserPrompt, SchemaJson, Model, Effort, MaxTokens, TimeoutSec, CorrelationId}) → Response{Content, PromptTokens, CompletionTokens, HttpStatus, DurationMs, Succeeded, ErrorCode, ErrorMessage}` — builds provider body, sets headers from secret settings, executes with `OnAfterResponse`/`OnBeforeRequest` callbacks, classifies errors, applies retry/back-off loop.
 - `AI_TestConnection() → Success, LatencyMs`.
 - Private: `Provider_BuildRequest`, `Provider_ParseResponse`, `Retry_ShouldRetry(HttpStatus)`, `Retry_Delay(Attempt, RetryAfter)`.
 
