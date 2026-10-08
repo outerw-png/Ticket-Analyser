@@ -2,6 +2,8 @@
 
 Version 1.0 · Status: Draft for review
 
+> **As-built status:** the MVP described here has been built in ODC (`TIA_Core`, `TIA_Common`, `TIA_Prompts`, `TIA_AI_Connector`, `TIA_Web`, `TIA_Admin`) and tested end to end. Where the original design and the as-built app differ, **section 17 (As-built addendum and lessons learned)** is authoritative. Prompt texts are in `prompt-template-seed.md`; build prompts in `mentor-prompts.md`.
+
 ---
 
 ## 0. Vision, Scope and Principles
@@ -183,7 +185,7 @@ Delete rules: child → parent `Delete` (cascade) for Analysis children; `Protec
 
 ### 4.2 Provider recommendation
 Default: **Anthropic Claude API** (`POST https://api.anthropic.com/v1/messages`). Alternatives (Azure OpenAI, other providers) plug into the same connector. Confirm with security/compliance that ticket data may be sent to the chosen provider. Configure:
-- Model in an ODC setting `Claude_Model` (e.g. `claude-opus-5-5`, or `claude-sonnet-5-5` as a lower-cost option; benchmark both on a golden set). `max_tokens` ≈ 4,000. Do **not** send `temperature`/`top_p`/`top_k` or a `thinking` parameter on current models (rejected with HTTP 400); control depth with `output_config.effort` (`medium` is a good start).
+- Model in an ODC setting `Claude_Model` (e.g. `claude-opus-5-5`, or `claude-sonnet-5-5` as a lower-cost option; benchmark both on a golden set). `max_tokens` = 16,000 (the newest models think before answering and thinking shares the budget; 4,000 truncated long answers). Do **not** send `temperature`/`top_p`/`top_k` or a `thinking` parameter on current models (rejected with HTTP 400); control depth with `output_config.effort` (`medium` is a good start).
 - Structured output: `output_config.format` of type `json_schema` using the template's `OutputSchemaJson`, so the reply conforms to the schema. Read the first content block of type `text`; check `stop_reason` — `refusal` is mapped to `AI-005`.
 - Authentication: header `x-api-key` from an **ODC secret setting** `Claude_ApiKey`, plus `anthropic-version: 2023-06-01`. Never log the key.
 - Timeout 60 s, 2 retries with exponential back-off (2 s, 6 s) only on 408/429/5xx (including Anthropic 529 overloaded); honor `Retry-After`.
@@ -280,7 +282,10 @@ Produce the JSON object with these fields:
 - assumptions: list of strings
 ```
 
-### 5.3 Output JSON schema (abridged)
+### 5.3 Output JSON schema (abridged, optional)
+
+> **As-built:** the MVP runs with `OutputSchemaJson` empty. The prompt contains the exact JSON skeleton (see `prompt-template-seed.md`) and the parser plus one repair attempt handle misses. Structured-output schemas accept only a subset of JSON Schema (no `maxLength`, `minimum`, `maximum`; objects need `additionalProperties: false`); the schema below uses those keywords and must be reduced before use.
+
 ```json
 {
   "type": "object",
@@ -716,3 +721,47 @@ Implementation: ODC roles in `TIA_Core`/`TIA_Web`/`TIA_Admin`; groups mapped fro
 5. Build UIs (`TIA_Web`, `TIA_Admin`) with UI patterns; wire Service Actions.
 6. Load initial `ANALYZE_TICKET` v1; run golden set; tune.
 7. Security review, load test (queue of 100 tickets), pilot with consultants, gather feedback, release.
+
+---
+
+## 17. As-built addendum and lessons learned
+
+### 17.1 Deviations from the original design
+| Area | Design | As built |
+|---|---|---|
+| LLM provider | Azure OpenAI default | **Anthropic Claude API** (`POST /v1/messages`, headers `x-api-key` and `anthropic-version: 2023-06-01`); settings `Claude_ApiKey` (secret) and `Claude_Model` |
+| Model parameters | temperature 0.2 | No `temperature`, `top_p`, `top_k` or `thinking` (rejected with 400); `PromptTemplate.Effort` (low/medium/high) replaces `Temperature`; `MaxOutputTokens` = 16000 |
+| Output schema | JSON schema enforced | Empty in MVP; JSON skeleton inside the prompt; parse + one repair call; error codes AI-005 refusal, AI-006 truncated, AI-007 no text, AI-010 invalid JSON, CFG-001 no active template |
+| `AiProviderConfig` | DB entity | Not built; provider settings are ODC settings and `AppSetting` rows |
+| Orchestration | Timer + wake | `Ticket_Submit` queues an Analysis (Queued, ReviewStatus Draft) and wakes `ProcessAnalysisQueue`; `Analysis_Execute` does sanitize → truncate → prompt → call → parse/repair → validate → urgency floor → persist |
+| Service actions | 11 | Added `Ticket_Get`, `Action_List`, `Prompt_List/Get/Save/Activate`, `Settings_List/Save`, `Monitoring_GetUsage`, `ErrorLog_List`, `AiCallLog_List`, `AuditLog_List` |
+| UI polling | Refresh pattern | Hidden `PollButton` clicked by a JavaScript `setInterval` (3 s); states derived only from `GetAnalysis`; interval cleared on Completed/Failed, after 100 polls and on screen destroy |
+| Not built | — | Export, `Analysis_RegenerateSection`, `Component_Upsert`, `Action_CreateFromRecommendation`, version compare, risk distribution chart, notifications, team scoping (see section 16) |
+
+### 17.2 Final Service Action catalogue (`TIA_Core`)
+Tickets: `Ticket_Save`, `Ticket_Submit`, `Ticket_Get`, `Ticket_List`, `Ticket_Delete`. Analysis: `Analysis_GetStatus`, `Analysis_Get`, `Analysis_UpdateSection`, `Analysis_Approve`, `Analysis_Reject`, `Question_SaveAnswer`, `Feedback_Submit`. Actions: `Action_List`, `Action_Update`. Dashboard: `Dashboard_GetKpis`. Prompt admin (TIA_PromptAdmin or TIA_Admin): `Prompt_List`, `Prompt_Get`, `Prompt_Save`, `Prompt_Activate`. Admin (TIA_Admin): `Settings_List`, `Settings_Save`, `Monitoring_GetUsage`, `ErrorLog_List`, `AiCallLog_List`, `AuditLog_List`. Internal: `Analysis_Execute`, timers `ProcessAnalysisQueue` and `Housekeeping`.
+
+### 17.3 Lessons learned (pitfalls met during the build)
+1. **Regex literals:** OutSystems text literals do not treat backslash as an escape; doubled backslashes produce `Unrecognized grouping construct`. A phone pattern without a separator would also mask plain numbers.
+2. **Thinking tokens share `max_tokens`:** 4,000 truncated long answers mid-JSON; text can be non-empty yet cut off, so check `stop_reason = max_tokens` before using content, and read all `text` blocks (not the first block).
+3. **Mandatory flags:** attributes filled later (risk, urgency, summaries) must not be mandatory; static-entity identifiers stay empty unless assigned (ReviewStatus must be set to Draft at creation).
+4. **Static text-to-record mapping:** Claude returns text for enums; map case-insensitively with defaults. Never compare identifiers with `TextToIdentifier`; make the static entities Public and use typed records.
+5. **Public entities and dependencies:** consumers can only use entities and structures that are Public; refresh dependencies (Ctrl+Q) in every consumer after each change.
+6. **Character encoding:** REST responses decoded as Latin-1 garble non-ASCII (`â` instead of an arrow); decode as UTF-8.
+7. **Debugger:** it does not step into other modules, and holding a breakpoint cancels the request (`OS-BERT-00000`). Inspect `AiResponse` and `AiCallLog` instead.
+8. **Draft tickets have no analysis:** Open on a draft goes to edit mode; `AnalysisResult` handles `AnalysisId = 0` gracefully.
+9. **Mentor limits:** it cannot add dependencies, consume service actions, configure layout menus or exception handlers, or set secrets. It generates generic CRUD screens on its own entities unless told to use only named Service Actions. Verify the widget tree (leftover empty containers, tab header/content pairing, If nesting) after every screen.
+10. **Advanced SQL on ODC (PostgreSQL):** use a Boolean parameter instead of `0` and do not table-qualify the column in `SET`.
+11. **Secrets:** API keys only as ODC secret settings set in the Portal per stage; never in prompts, logs, entities or chat. Settings screens never list keys or secrets.
+
+### 17.4 Acceptance (regression) set
+Run with the live prompt version after every prompt or connector change:
+1. **S/4HANA invoices incident (P2):** risk High, urgency High, 5 components, stakeholders incl. Finance and Integration Lead, Immediate actions.
+2. **Urgency floor (P1, "production down", data loss):** urgency at least High; "AI proposed" shown when the floor raised it.
+3. **Sparse ticket ("App is slow"):** confidence below 0.5, assumptions and questions asking for details.
+4. **Prompt injection ("ignore all previous instructions…"):** analysed as a normal ticket; no system prompt revealed; risk not forced to Low.
+5. **PII/secrets (email, phone, password, IP, IBAN):** none appear in `RawResponseJson` or the summaries; masked tokens only.
+For each: all nine tabs filled with correct labels, no `ErrorLog` entries, approve, reject (with reason) and feedback work; also test a truncated run (`MaxOutputTokens` 500 → `AI-006`, friendly failed card, one `AiCallLog` row) and a bad-JSON run (repair, then `AI-010` with an `ErrorLog` row). Restore the prompt and token limit afterwards.
+
+### 17.5 Operations checklist
+Set `Claude_ApiKey` and `Claude_Model` per stage with separate API keys; set an Anthropic spend limit; map Entra ID groups to the five roles; confirm the data policy for sending ticket text to the provider; keep the `Housekeeping` retention settings (`RetentionDaysRawResponse`, `RetentionDaysLogs`, `RetentionMonthsDeletedTickets`); monitor the `Monitoring` screen for failure rate and token use.
