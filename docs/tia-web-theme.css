@@ -34,18 +34,21 @@
 /* ===== 2. Base components ===== */
 
 /* Primary buttons */
-.btn-primary, .nt-btn.primary, .mt-btn-open, .db-btn-primary, .ar-save-btn, .ar-retry-btn {
+.btn-primary, .nt-btn.primary, .mt-btn-primary, .mt-btn-open, .db-btn-primary, .ar-save-btn, .ar-retry-btn {
   background: var(--tia-primary) !important;
   border-color: var(--tia-primary) !important;
   color: #fff !important;
   border-radius: var(--tia-radius-sm);
 }
-.btn-primary:hover, .nt-btn.primary:hover, .mt-btn-open:hover, .db-btn-primary:hover,
+.btn-primary:hover, .nt-btn.primary:hover, .mt-btn-primary:hover, .mt-btn-open:hover, .db-btn-primary:hover,
 .ar-save-btn:hover, .ar-retry-btn:hover {
   background: var(--tia-primary-dark) !important;
   border-color: var(--tia-primary-dark) !important;
 }
 .nt-btn.primary { box-shadow: 0 4px 14px rgba(99,102,241,.3); }
+
+/* MyTickets primary button */
+.mt-btn-primary { font-size: 13px; font-weight: 600; padding: 8px 18px; cursor: pointer; }
 
 /* Secondary buttons */
 .nt-btn.secondary, .mt-btn-dup, .mt-btn-link, .mt-btn-secondary, .ai-btn-secondary,
@@ -68,6 +71,7 @@
 .mt-btn-secondary, .ai-btn-secondary { font-size: 13px; font-weight: 600; padding: 7px 16px; }
 .db-btn-primary { font-size: 13px; font-weight: 600; padding: 8px 18px; border: none; cursor: pointer; }
 .ar-edit-btn { padding: 6px 14px; font-size: 13px; }
+.ar-edit-btn--sm { padding: 4px 10px; font-size: 12px; }
 .ar-save-btn, .ar-retry-btn { padding: 8px 18px; font-weight: 600; border: none; cursor: pointer; }
 .ar-cancel-btn { padding: 8px 18px; }
 
@@ -158,7 +162,7 @@ input:focus, textarea:focus, select:focus {
   flex-wrap: wrap; margin-bottom: 20px;
 }
 .ai-page-header { margin-bottom: 20px; }
-.mt-title, .db-page-title, .ai-page-title { font-size: 22px; font-weight: 700; color: var(--tia-text); margin: 0; }
+.mt-title, .mt-page-title, .db-page-title, .ai-page-title { font-size: 22px; font-weight: 700; color: var(--tia-text); margin: 0; }
 
 /* Top menu (links are <a role="menuitem"> with an icon <i class="icon ph ...">) */
 a[role="menuitem"] {
@@ -214,6 +218,8 @@ a[role="menuitem"][aria-current="page"], a[role="menuitem"].active, a[role="menu
 .ar-inprogress-card { max-width: 640px; margin: 0 auto; }
 .ar-ip-wrap { display: flex; flex-direction: column; gap: 20px; padding: 24px; }
 .ar-ip-header-row { display: flex; align-items: flex-start; }
+.ar-ip-header-row--no-spinner { gap: 0; }
+.ar-ip-spinner, .ar-ip-spinner--hidden { display: none !important; }
 .ar-ip-heading-col { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
 .ar-ip-heading { font-size: 17px; font-weight: 700; color: var(--tia-text); display: block; line-height: 1.3; }
 .ar-ip-ticket-title {
@@ -241,39 +247,34 @@ a[role="menuitem"][aria-current="page"], a[role="menuitem"].active, a[role="menu
 
 /* completed view: container only lays out; each child is its own card */
 .ar-completed-container { display: flex; flex-direction: column; gap: 16px; padding: 0; background: transparent; border: none; box-shadow: none; }
-.ar-ticket-heading { font-size: 24px; font-weight: 700; color: var(--tia-text); display: block; margin-bottom: 8px; line-height: 1.3; }
+.ar-h1, .ar-ticket-heading { display: block; font-size: 24px; font-weight: 700; color: var(--tia-text); display: block; margin-bottom: 8px; line-height: 1.3; }
+.ar-header-meta { display: block; font-size: 13px; color: var(--tia-muted); margin-top: 10px; }
 .ar-ticket-title { font-size: 18px; font-weight: 700; color: var(--tia-text); display: block; }
 .ar-badges-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .ar-confidence { font-size: 14px; color: var(--tia-text-3); display: block; }
 
-/* key facts strip: 4 equal cards; the container is the element that directly holds them */
-.ar-facts-row, *:has(> .ar-fact-card) {
-  display: grid !important;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-  gap: 16px !important;
-  width: 100% !important; max-width: 100% !important; box-sizing: border-box;
-  margin: 16px 0 !important; align-items: stretch !important;
-}
+/* key facts strip: place the four cards in the OutSystems UI "Columns 4" pattern (it handles 4/2/1 columns).
+   If you use a plain container instead, give it the class ar-facts-row. */
+.ar-facts-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; width: 100%; margin: 16px 0; align-items: stretch; }
+@media (max-width: 900px) { .ar-facts-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .ar-facts-row { grid-template-columns: 1fr; } }
 .ar-fact-card {
-  display: block !important; width: auto !important; min-width: 0 !important; max-width: none !important;
-  flex: none !important; margin: 0 !important; box-sizing: border-box; height: 100%; align-self: stretch;
-  background: #fff; border: 1px solid var(--tia-border); border-left: 4px solid var(--tia-primary) !important;
+  display: block; width: 100%; min-width: 0; height: 100%; box-sizing: border-box; margin: 0;
+  background: #fff; border: 1px solid var(--tia-border); border-left: 4px solid var(--tia-primary);
   border-radius: var(--tia-radius); padding: 16px 18px; box-shadow: 0 1px 3px rgba(15,23,42,.05);
 }
-.ar-fact-card:nth-child(3) { border-left-color: #14b8a6 !important; }
-.ar-fact-card:nth-child(4) { border-left-color: var(--tia-faint) !important; }
-.ar-fact-card.risk-low      { border-left-color: #16a34a !important; background: #f0fdf4; }
-.ar-fact-card.risk-medium   { border-left-color: #f59e0b !important; background: #fffbeb; }
-.ar-fact-card.risk-high     { border-left-color: #ea580c !important; background: #fff7ed; }
-.ar-fact-card.risk-critical { border-left-color: var(--tia-danger) !important; background: #fef2f2; }
+.ar-fact-card.risk-low      { border-left-color: #16a34a; background: #f0fdf4; }
+.ar-fact-card.risk-medium   { border-left-color: #f59e0b; background: #fffbeb; }
+.ar-fact-card.risk-high     { border-left-color: #ea580c; background: #fff7ed; }
+.ar-fact-card.risk-critical { border-left-color: var(--tia-danger); background: #fef2f2; }
 .ar-fact-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--tia-muted); margin-bottom: 6px; white-space: nowrap; }
 .ar-fact-value { display: block; font-size: 20px; font-weight: 700; color: var(--tia-text); }
-.ar-fact-line { display: flex; justify-content: space-between; font-size: 13px; color: var(--tia-text-3); padding: 2px 0; }
-.ar-fact-line b { color: var(--tia-text); font-size: 15px; }
+.ar-fact-sub { display: block; font-size: 12px; color: var(--tia-muted); margin-top: 4px; }
+.ar-fact-line { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.ar-fact-line-num { font-size: 15px; font-weight: 700; color: var(--tia-text); }
+.ar-fact-line-lbl { font-size: 13px; color: var(--tia-muted); }
 .ar-meter { height: 6px; background: var(--tia-border); border-radius: 3px; overflow: hidden; margin-top: 8px; }
 .ar-meter-fill { height: 100%; background: var(--tia-primary); border-radius: 3px; }
-@media (max-width: 900px) { .ar-facts-row, *:has(> .ar-fact-card) { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
-@media (max-width: 520px) { .ar-facts-row, *:has(> .ar-fact-card) { grid-template-columns: 1fr !important; } }
 
 /* tabs */
 .osui-tabs__header { scrollbar-width: none; }
@@ -335,7 +336,10 @@ a[role="menuitem"][aria-current="page"], a[role="menuitem"].active, a[role="menu
 .db-view-all { font-size: 13px; }
 
 /* ===== 8. ActionItems (ai-) ===== */
-.ai-ticket-link { font-size: 13px; }
+.ai-ticket-link { font-size: 13px; display: block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-desc { max-width: 380px; }
+.ai-table td { padding-top: 12px; padding-bottom: 12px; }
+.ai-empty-cell { color: var(--tia-faint); }
 .ai-status-select, .ai-status-select select { min-width: 150px; width: 100%; }
 
 /* ===== 9. Shared filter row (MyTickets, ActionItems) ===== */
